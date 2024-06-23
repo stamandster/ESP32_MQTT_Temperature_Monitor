@@ -21,7 +21,7 @@ char mqtt_client_id[30] = "esp32"; // Default client ID, change as needed
 char mqtt_topic_base[100]; // Base topic for MQTT
 
 // Temperature settings
-int oneWireBus = 27; // GPIO pin for OneWire
+int oneWireBus = 27; // GPIO pin for DS18B20
 OneWire oneWire(oneWireBus);
 DallasTemperature sensors(&oneWire);
 float temperatureOffsets[10]; // Array to store temperature offsets
@@ -71,7 +71,7 @@ String buildTemperatureDisplay() {
     float tempC = sensors.getTempC(address);
     float tempF = sensors.getTempF(address);
     
-    if (tempC == -127.0 || tempF == -196.6) {
+    if (tempC == -127.00 || tempF == -196.60) {
       tempC = 0.0;
       tempF = 0.0;
     } else {
@@ -244,6 +244,7 @@ void setup() {
     String htmlPage = "<html><head><title>Configuration</title><style>body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:0;background-color:#f4f4f9;color:#333;}h1,h2{text-align:center;}form{width:90%;max-width:600px;margin:20px auto;padding:20px;border:1px solid #ddd;background-color:#fff;border-radius:5px;}label{display:block;margin-bottom:8px;}input[type='text'],input[type='password'],input[type='number'],select{width:100%;padding:10px;margin-bottom:10px;border:1px solid #ccc;border-radius:4px;}input[type='submit']{display:block;width:100%;padding:10px;background-color:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;}input[type='submit']:hover{background-color:#0056b3;}a{display:inline-block;padding:10px 15px;margin:20px;text-decoration:none;color:#fff;background-color:#007bff;border-radius:5px;}a:hover{background-color:#0056b3;}</style></head><body>";
     htmlPage += "<h1>Configuration</h1>";
     htmlPage += buildConfigForm();
+    htmlPage += "<form action='/restart' method='post'><input type='submit' value='Restart Arduino'></form>";
     htmlPage += "</body></html>";
     request->send(200, "text/html", htmlPage);
   });
@@ -283,8 +284,30 @@ void setup() {
         preferences.putFloat(("offset" + String(i)).c_str(), temperatureOffsets[i]);
       }
     }
-    request->send(200, "text/html", "<html><body><h1>Configuration Saved</h1><a href='/'>Back</a></body></html>");
+    // Send response indicating restart
+    String htmlResponse = "<html><body><h1>Configuration Saved...</h1>";
+    htmlResponse += "<p>Please wait...</p>";
+    htmlResponse += "<meta http-equiv='refresh' content='3;url=/config'>";
+    htmlResponse += "</body></html>";
+
+    // Send response with a delay before restart
+    request->send(200, "text/html", htmlResponse);
+
     reconnectMQTT();
+  });
+
+  server.on("/restart", HTTP_POST, [](AsyncWebServerRequest *request){
+      // Send response indicating restart
+      String htmlResponse = "<html><body><h1>Restarting Arduino...</h1>";
+      htmlResponse += "<p>Please wait...</p>";
+      htmlResponse += "<meta http-equiv='refresh' content='5;url=/'>";
+      htmlResponse += "</body></html>";
+      
+      // Send response with a delay before restart
+      request->send(200, "text/html", htmlResponse);
+      
+      // Restart ESP32
+      ESP.restart();
   });
 
   // Start server
