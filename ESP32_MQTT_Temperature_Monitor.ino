@@ -21,7 +21,7 @@ char mqtt_client_id[30] = "esp32"; // Default client ID, change as needed
 char mqtt_topic_base[100]; // Base topic for MQTT
 
 // Temperature settings
-int oneWireBus = 27; // GPIO pin for DS18B20
+int oneWireBus = 27; // GPIO pin for OneWire
 OneWire oneWire(oneWireBus);
 DallasTemperature sensors(&oneWire);
 float temperatureOffsets[10]; // Array to store temperature offsets
@@ -129,12 +129,12 @@ String buildConfigForm() {
     form += "'><br>";
   }
 
-  form += "<label for='gpio'>GPIO Pin for DS18B20:</label>";
+  form += "<label for='gpio'>GPIO Pin for OneWire:</label>";
   form += "<input type='number' id='gpio' name='gpio' value='" + String(oneWireBus) + "' required><br>";
 
   form += "<input type='submit' value='Save'>";
   form += "</form>";
-  form += "<br><a href='/'>Back</a>";
+  form += "<br><div style='text-align:center'><a href='/'>Back</a></div>";
   return form;
 }
 
@@ -231,11 +231,11 @@ void setup() {
   // Setup web server routes
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     String htmlPage = "<html><head><title>ESP32 Temperature Monitor</title>";
-    htmlPage += "<style>body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:0;background-color:#f4f4f9;color:#333;}h1,h2{text-align:center;}table{width:100%;border-collapse:collapse;margin:20px auto;}td,th{border:1px solid #ddd;padding:8px;}th{background-color:#f2f2f2;text-align:left;}tr:nth-child(even){background-color:#f9f9f9;}a{display:inline-block;padding:10px 15px;margin:20px;text-decoration:none;color:#fff;background-color:#007bff;border-radius:5px;}a:hover{background-color:#0056b3;}</style>";
+    htmlPage += "<style>body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:0;background-color:#f4f4f9;color:#333;}h1,h2{text-align:center;}table{width:90%;border-collapse:collapse;max-width:600px;margin:20px auto;border:1px solid #ddd;background-color:#fff;border-radius:5px;}td,th{border:1px solid #ddd;padding:8px;}th{background-color:#f2f2f2;text-align:left;}tr:nth-child(even){background-color:#f9f9f9;}a{display:inline-block;padding:10px 15px;margin:20px;text-decoration:none;color:#fff;background-color:#007bff;border-radius:5px;}a:hover{background-color:#0056b3;}</style>";
     htmlPage += "<meta http-equiv='refresh' content='30'>";
     htmlPage += "</head><body><h1>ESP32 Temperature Monitor</h1>";
     htmlPage += buildTemperatureDisplay();
-    htmlPage += "<br><a href='/config'>Configuration</a>";
+    htmlPage += "<br><div style='text-align:center'><a href='/config'>Configuration</a></div>";
     htmlPage += "</body></html>";
     request->send(200, "text/html", htmlPage);
   });
