@@ -21,7 +21,7 @@ char mqtt_client_id[30] = "esp32"; // Default client ID, change as needed
 char mqtt_topic_base[100]; // Base topic for MQTT
 
 // Temperature settings
-int oneWireBus = 13; // GPIO pin for DS18B20
+int oneWireBus = 27; // GPIO pin for DS18B20
 OneWire oneWire(oneWireBus);
 DallasTemperature sensors(&oneWire);
 float temperatureOffsets[10]; // Array to store temperature offsets
@@ -33,18 +33,9 @@ Preferences preferences;
 // Async web server on port 80
 AsyncWebServer server(80);
 
-// Function to scan for OneWire devices on a range of GPIO pins
-int scanForOneWireBus() {
-  for (int pin = 0; pin < 40; pin++) {
-    OneWire testOneWire(pin);
-    DallasTemperature testSensors(&testOneWire);
-    testSensors.begin();
-    if (testSensors.getDeviceCount() > 0) {
-      return pin;
-    }
-  }
-  return -1; // Return -1 if no sensors are found on any pin
-}
+// Keep-alive interval
+unsigned long lastKeepAlive = 0;
+const unsigned long keepAliveInterval = 30000; // 30 seconds
 
 void setupWiFi() {
   Serial.println("Connecting to WiFi...");
@@ -72,25 +63,35 @@ void reconnectMQTT() {
 }
 
 String buildTemperatureDisplay() {
-  String html = "<h2>Temperatures</h2>";
+  String html = "<h2>Temperatures</h2><table>";
   sensors.requestTemperatures();
   for (int i = 0; i < sensors.getDeviceCount(); i++) {
     DeviceAddress address;
     sensors.getAddress(address, i);
-    float tempC = sensors.getTempC(address) + temperatureOffsets[i];
-    float tempF = sensors.getTempF(address) + temperatureOffsets[i];
-    html += "Sensor ";
+    float tempC = sensors.getTempC(address);
+    float tempF = sensors.getTempF(address);
+    
+    if (tempC == -127.0 || tempF == -196.6) {
+      tempC = 0.0;
+      tempF = 0.0;
+    } else {
+      tempC += temperatureOffsets[i];
+      tempF += temperatureOffsets[i];
+    }
+
+    html += "<tr><td>Sensor ";
     html += i;
-    html += ": ";
+    html += "</td><td>";
     html += useFahrenheit ? String(tempF, 1) : String(tempC, 1); // Format to 1 decimal place
-    html += useFahrenheit ? " F" : " C";
-    html += " (Address: ";
+    html += useFahrenheit ? " F" : " C"; // Removed the degree symbol
+    html += "</td><td>Address: ";
     for (uint8_t j = 0; j < 8; j++) {
       if (address[j] < 16) html += "0";
       html += String(address[j], HEX);
     }
-    html += ")<br>";
+    html += "</td></tr>";
   }
+  html += "</table>";
   return html;
 }
 
@@ -139,10 +140,19 @@ String buildConfigForm() {
 
 void publishChangedTemperatures() {
   static float lastTemperatures[10] = {0}; // Array to store last published temperatures
+  static unsigned long lastPublishTimes[10] = {0}; // Array to store the last publish times
+
   sensors.requestTemperatures();
   for (int i = 0; i < sensors.getDeviceCount(); i++) {
     float currentTemp = useFahrenheit ? sensors.getTempFByIndex(i) : sensors.getTempCByIndex(i);
-    if (abs(currentTemp - lastTemperatures[i]) >= 0.2) { // Check if temperature has changed by at least 0.2 degree
+    if (currentTemp == -127.0 || currentTemp == -196.6) {
+      currentTemp = 0.0;
+    } else {
+      currentTemp += temperatureOffsets[i];
+    }
+    unsigned long currentTime = millis();
+
+    if (abs(currentTemp - lastTemperatures[i]) >= 0.2 || (currentTime - lastPublishTimes[i] >= 10000)) { // Check if temperature has changed by at least 0.2 degree or 10 seconds have passed
       DeviceAddress address;
       sensors.getAddress(address, i);
 
@@ -161,6 +171,7 @@ void publishChangedTemperatures() {
       Serial.print(": ");
       Serial.println(currentTemp);
       lastTemperatures[i] = currentTemp; // Update last published temperature
+      lastPublishTimes[i] = currentTime; // Update last publish time
 
       // Update the web page with the new temperature
       String htmlPage = "<html><head><title>ESP32 Temperature Monitor</title>";
@@ -184,21 +195,31 @@ void setup() {
   preferences.getString("mqtt_username", mqtt_username, sizeof(mqtt_username));
   preferences.getString("mqtt_password", mqtt_password, sizeof(mqtt_password));
   preferences.getString("mqtt_client_id", mqtt_client_id, sizeof(mqtt_client_id));
-
-  // Construct MQTT topic base
   snprintf(mqtt_topic_base, sizeof(mqtt_topic_base), "%s", mqtt_client_id);
 
-  // Load temperature unit preference
+  // Load temperature unit from Preferences
   useFahrenheit = preferences.getBool("use_fahrenheit", false);
 
-  // Automatically scan for the OneWire bus if no GPIO pin is saved in preferences
-  oneWireBus = preferences.getInt("gpio_pin", -1);
+  // Load GPIO pin from Preferences, or scan for it if not set
+  oneWireBus = preferences.getInt("gpio_pin", 27);
   if (oneWireBus == -1) {
-    oneWireBus = scanForOneWireBus();
-    preferences.putInt("gpio_pin", oneWireBus);
+    Serial.println("No OneWire sensors found!");
+    return; // Stop setup if no sensors are found
   }
+
+  // Initialize OneWire and DallasTemperature libraries
   oneWire.begin(oneWireBus);
   sensors.setOneWire(&oneWire);
+  sensors.begin();
+
+  // Load temperature offsets from Preferences
+  int numDevices = sensors.getDeviceCount();
+  Serial.print("Found ");
+  Serial.print(numDevices);
+  Serial.println(" devices.");
+  for (int i = 0; i < numDevices; i++) {
+    temperatureOffsets[i] = preferences.getFloat(("offset" + String(i)).c_str(), 0.0);
+  }
 
   // Setup WiFi
   setupWiFi();
@@ -207,19 +228,10 @@ void setup() {
   mqttClient.setServer(mqtt_server, 1883);
   reconnectMQTT();
 
-  // Setup DS18B20 temperature sensors
-  sensors.begin();
-  int numDevices = sensors.getDeviceCount();
-  Serial.print("Found ");
-  Serial.print(numDevices, DEC);
-  Serial.println(" devices.");
-  for (int i = 0; i < numDevices; i++) {
-    temperatureOffsets[i] = preferences.getFloat(("offset" + String(i)).c_str(), 0.0);
-  }
-
   // Setup web server routes
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     String htmlPage = "<html><head><title>ESP32 Temperature Monitor</title>";
+    htmlPage += "<style>body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:0;background-color:#f4f4f9;color:#333;}h1,h2{text-align:center;}table{width:100%;border-collapse:collapse;margin:20px auto;}td,th{border:1px solid #ddd;padding:8px;}th{background-color:#f2f2f2;text-align:left;}tr:nth-child(even){background-color:#f9f9f9;}a{display:inline-block;padding:10px 15px;margin:20px;text-decoration:none;color:#fff;background-color:#007bff;border-radius:5px;}a:hover{background-color:#0056b3;}</style>";
     htmlPage += "<meta http-equiv='refresh' content='30'>";
     htmlPage += "</head><body><h1>ESP32 Temperature Monitor</h1>";
     htmlPage += buildTemperatureDisplay();
@@ -229,9 +241,10 @@ void setup() {
   });
 
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request){
-    String htmlPage = "<html><head><title>Configuration</title></head><body>";
+    String htmlPage = "<html><head><title>Configuration</title><style>body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:0;background-color:#f4f4f9;color:#333;}h1,h2{text-align:center;}form{width:90%;max-width:600px;margin:20px auto;padding:20px;border:1px solid #ddd;background-color:#fff;border-radius:5px;}label{display:block;margin-bottom:8px;}input[type='text'],input[type='password'],input[type='number'],select{width:100%;padding:10px;margin-bottom:10px;border:1px solid #ccc;border-radius:4px;}input[type='submit']{display:block;width:100%;padding:10px;background-color:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;}input[type='submit']:hover{background-color:#0056b3;}a{display:inline-block;padding:10px 15px;margin:20px;text-decoration:none;color:#fff;background-color:#007bff;border-radius:5px;}a:hover{background-color:#0056b3;}</style></head><body>";
     htmlPage += "<h1>Configuration</h1>";
     htmlPage += buildConfigForm();
+    htmlPage += "</body></html>";
     request->send(200, "text/html", htmlPage);
   });
 
@@ -254,40 +267,43 @@ void setup() {
       snprintf(mqtt_topic_base, sizeof(mqtt_topic_base), "%s", mqtt_client_id);
     }
     if (request->hasParam("use_fahrenheit")) {
-      useFahrenheit = request->getParam("use_fahrenheit")->value() == "true";
+      useFahrenheit = request->getParam("use_fahrenheit")->value().equalsIgnoreCase("true");
       preferences.putBool("use_fahrenheit", useFahrenheit);
-    } else {
-      useFahrenheit = false;
-      preferences.putBool("use_fahrenheit", false);
     }
-
-    // Save temperature offsets
-    for (int i = 0; i < sensors.getDeviceCount(); i++) {
-      if (request->hasParam("offset" + String(i))) {
-        float offset = request->getParam("offset" + String(i))->value().toFloat();
-        temperatureOffsets[i] = offset;
-        preferences.putFloat(("offset" + String(i)).c_str(), offset);
-      }
-    }
-
-    // Save GPIO pin for DS18B20
     if (request->hasParam("gpio")) {
       oneWireBus = request->getParam("gpio")->value().toInt();
       preferences.putInt("gpio_pin", oneWireBus);
-      oneWire.begin(oneWireBus); // Reinitialize OneWire with the new pin
+      oneWire.begin(oneWireBus);
       sensors.setOneWire(&oneWire);
       sensors.begin();
     }
-
-    request->send(200, "text/html", "<html><body><h1>Configuration Saved!</h1><br><a href='/config'>Back to Configuration</a></body></html>");
-    delay(2000); // Delay to ensure preferences are saved before rebooting
-    ESP.restart();
+    for (int i = 0; i < sensors.getDeviceCount(); i++) {
+      if (request->hasParam("offset" + String(i))) {
+        temperatureOffsets[i] = request->getParam("offset" + String(i))->value().toFloat();
+        preferences.putFloat(("offset" + String(i)).c_str(), temperatureOffsets[i]);
+      }
+    }
+    request->send(200, "text/html", "<html><body><h1>Configuration Saved</h1><a href='/'>Back</a></body></html>");
+    reconnectMQTT();
   });
 
+  // Start server
   server.begin();
 }
 
 void loop() {
+  if (!mqttClient.connected()) {
+    reconnectMQTT();
+  }
+
   mqttClient.loop();
   publishChangedTemperatures();
+
+  unsigned long currentTime = millis();
+  if (currentTime - lastKeepAlive > keepAliveInterval) {
+    mqttClient.publish((String(mqtt_topic_base) + "/keepalive").c_str(), "keepalive");
+    lastKeepAlive = currentTime;
+  }
+
+  delay(1000); // Add delay to reduce WDT resets
 }
